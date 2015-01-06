@@ -8,19 +8,17 @@ from collections import Counter
 import operator
 import re
 import math
-import pandas
 import itertools
-import datetime
 import json
 import codecs
 import difflib
 import string
 import time
 import numpy
-import scipy.sparse
-import scipy.spatial
-import nltk
+# import scipy.sparse
+# import scipy.spatial
 import pickle
+import nltk
 
 class Progress:
     def __init__(self):
@@ -159,22 +157,22 @@ def split_pattern(count):
     f.close()    
     return words 
         
-def bag_of_words(data, words):
-    print(len(data))
-    print(len(words))
-    m = scipy.sparse.lil_matrix((len(data),len(words)))
-    prog = Progress()
-    for i,d in enumerate(data):
-        prog.progress(i, len(data))
-        dwords = d.split()
-        sum = 0
-        for w in dwords:
-            if w in words:
-                sum+=1
-                j = words.index(w)
-                m[i,j] = 1
-        m[i,:] = m[i,:]/sum
-    return m
+# def bag_of_words(data, words):
+#     print(len(data))
+#     print(len(words))
+#     m = scipy.sparse.lil_matrix((len(data),len(words)))
+#     prog = Progress()
+#     for i,d in enumerate(data):
+#         prog.progress(i, len(data))
+#         dwords = d.split()
+#         sum = 0
+#         for w in dwords:
+#             if w in words:
+#                 sum+=1
+#                 j = words.index(w)
+#                 m[i,j] = 1
+#         m[i,:] = m[i,:]/sum
+#     return m
 
 def get_distances(bag):
     bag = bag.tocsr()
@@ -212,8 +210,8 @@ def cluster_sentences(distmat):
 def get_data():
     print('getting data')
     with open('db/statuses.txt') as statuses_file:
-        statuses = json.load(statuses_file)
-    statuses = {statuse['pk']: statuse['fields']['content'] for statuse in statuses}
+        statuses_json = json.load(statuses_file)
+    statuses = {status['pk']: status['fields']['content'] for status in statuses_json}
     with open('db/tags.txt') as tags_file:
         tags_data = json.load(tags_file)
     tags = {}
@@ -228,23 +226,18 @@ def get_data():
         
 class AutoTag:
     
-    def __init__(self):
-        
-        self.word_features = self.get_word_features()
-        self.classifier = {}
 
     def clean_text(self,text):
     #     text = re.sub('[^a-zA-Zא-ת0-9\"\\n]',' ', text)
-    #     text = re.sub('([.,?!])([^ ])','\\1 \\2', text)
         puncmarks = string.punctuation+'״׳'
     #     add space before punctuation   
         text = re.sub('(\S)(['+puncmarks+']+)\s','\\1 \\2 ', text)
     #     add space after punctuation   
         text = re.sub('\s(['+puncmarks+']+)(\S)',' \\1 \\2 ', text)
         text = re.sub('\s+', ' ', text)
-        f = codecs.open('clean_text','w','utf-8')
-        f.write(text)
-        f.close()
+#         f = codecs.open('clean_text','w','utf-8')
+#         f.write(text)
+#         f.close()
         return text
         
     def count_data(self,data,name):
@@ -257,81 +250,90 @@ class AutoTag:
 
     def document_features(self,document):
         document_words = set(document.split())
+        with open('word_features','r') as word_features_file:
+            word_features = pickle.load(word_features_file)
         features = {}
-        for word in self.word_features:
+        for word in word_features:
             features['contains(%s)' % word] = (word in document_words)
         return features
     
-    def train(self,documents,tags):
-        word_features = self.get_word_features()
+    def get_tags(self,data,n=5):
+        tag_count = self.count_data([tag for status,tags in data for tag in tags],'tag_count.txt')
+        tags = [tag for tag,count in tag_count if count > n]
+#         tags = tags[:20]
+        return tags
+    
+    def train(self,data):
+        tags = self.get_tags(data)
+        print(len(tags))
         classifier = {}
         for tag in tags:
             print(tag)
-            featuresets = [(self.document_features(d), tag in c) for (d,c) in documents]
+            featuresets = [(self.document_features(doc), tag in tags) for (doc,tags) in data if len(tags) > 0]
             classifier[tag] = nltk.NaiveBayesClassifier.train(featuresets)
-            classifier[tag].show_most_informative_features(5)
+#             classifier[tag].show_most_informative_features(5)
+        with open('classifier','w') as classifier_file:
+            pickle.dump(classifier,classifier_file)
         return classifier
     
     def test_tag(self,documents,tag,thresh):
         N = len(documents)
-        word_features = self.get_word_features()
-        classifier = self.get_classifier()
-        featuresets = [(self.document_features(d), tag in c) for (d,c) in documents]
-        print(nltk.classify.accuracy(classifier, featuresets))
+        with open('classifier','r') as classifier_file:
+            classifier = pickle.load(classifier_file)
+#         featuresets = [(self.document_features(d), tag in c) for (d,c) in documents]
+#         print(nltk.classify.accuracy(classifier, featuresets))
         probs = []
         for i in range(N):
-            prob = classifier[tag].prob_classify(featuresets[i][0])
+            if tag not in classifier:
+                continue
+            prob = classifier[tag].prob_classify(self.document_features(documents[i]))
             if prob.prob(True) > thresh:
-                probs.append(documents[i][0])
+                probs.append((prob.prob(True),documents[i]))
+        probs = sorted(probs,reverse=True)        
         return probs
     
     def test_doc(self,document,tags,thresh):
-        N = len(tags)
-        classifier = self.get_classifier()
+        with open('classifier','r') as classifier_file:
+            classifier = pickle.load(classifier_file)
         probs = []
         for tag in tags:
+            if tag not in classifier:
+                continue
             prob = classifier[tag].prob_classify(self.document_features(document))
             if prob.prob(True) > thresh:
-                probs.append(tag)
+                probs.append((prob.prob(True),tag))
+        probs = sorted(probs,reverse=True)
         return probs
 # most probable tag: input: status, n  output: list (top n most probable, + score)     
 
-    def get_word_features(self):
-        with open('word_count.txt', 'r') as f:
-            word_count = json.load(f)
+    def create_word_features(self,data):
+        word_count = self.count_data([w for s,t in data for w in s.split()],'word_count.txt')
         max_count = max([v for k,v in word_count])
-        return [k for (k,v) in word_count if v > 10 and v < max_count/10]
-        
-
-    def get_classifier(self):
-        with open('classifier','r') as classifier_file:
-            classifier = pickle.load(classifier_file)
-        return classifier
+        word_features = [k for (k,v) in word_count if v > 10 and v < max_count/10]
+        with open('word_features','w') as word_file:
+            pickle.dump(word_features,word_file)
 
     def classify(self,data):
         print('cleaning')
         data = [(self.clean_text(s),t) for s,t in data]
-        print('counting')
-        tag_count = self.count_data([c for s,t in  data for c in t],'tag_count.txt')
-        word_count = self.count_data([w for s,t in data for w in s.split()],'word_count.txt')
-        self.word_features = self.get_word_features()
+        print('extracting word features')
+        self.create_word_features(data)
         print('classifying')
-        N = len(data)
-        train_statuses = data[:N]
-#         test_statuses = data[N/2:]
-        big_tags = [tag for tag,count in tag_count if count > 20]
-        big_tags = big_tags[:5]
-        classifier = self.train(train_statuses, big_tags)
-        with open('classifier','w') as classifier_file:
-            pickle.dump(classifier,classifier_file)
+        classifier = self.train(data)
 #         for status,count in test_statuses:
 #             print(self.test_doc(status, big_tags, word_features, classifier, 0.5))
 
 
 if __name__ == '__main__':
-    statuses = get_data()
+    data = get_data()
     at = AutoTag()
-    at.classify(statuses)
+#     at.classify(data)
+    tags = at.get_tags(data)
+    documents = [s for s,t in data]
+    print(at.test_doc(documents[0], tags, 0))
+    print(tags[0])
+    print(at.test_tag(documents[:200], tags[0], 0)[0][1])
+    
 #     print(tags)
 #     bag = bag_of_words(statuses,word_features)
 #     distmat = get_distances(bag)
@@ -347,3 +349,10 @@ if __name__ == '__main__':
 
 # interface - get tag: statuses sorted by probability to be tagged
 #             get status: tags sorted by probability to fit
+
+
+
+#TODO: use data object (with id, text and tags) instead of tuple
+#TODO: fix Dependencies
+#TODO: print most informative features to file
+#TODO: clean text in train, and test
