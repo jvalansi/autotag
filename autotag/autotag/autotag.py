@@ -19,6 +19,16 @@ import numpy
 # import scipy.spatial
 import pickle
 import nltk
+from nltk.stem import WordNetLemmatizer
+from nltk.corpus import stopwords
+import logging
+import logging.config
+import os
+from stopwords import heb_stopwords
+import random
+import csv
+from itertools import izip
+# import cPickle
 
 class Progress:
     def __init__(self):
@@ -31,9 +41,6 @@ class Progress:
             elapsed = time.time() - self.start
             self.start = time.time()
             print(str(self.i)+" : "+str(elapsed))
-
-
-    
 
 def tf(word,words):
     return words.count(word)
@@ -207,34 +214,67 @@ def cluster_sentences(distmat):
     print(clusters)
     return clusters
 
-def get_data():
-    print('getting data')
-    with open('db/statuses.txt') as statuses_file:
-        statuses_json = json.load(statuses_file)
-    statuses = {status['pk']: status['fields']['content'] for status in statuses_json}
-    with open('db/tags.txt') as tags_file:
-        tags_data = json.load(tags_file)
-    tags = {}
-    for tag in tags_data:
-        id = tag['fields']['object_id'] 
-        if id not in tags:
-            tags[id] = []
-        tags[id].append(str(tag['fields']['tag']))
-    data = [(statuses[i], tags[i]) for i in statuses if i in tags]
-    return data
+def get_json_data(dir):
+    data_json = []
+    data = {}
+#     tags = {}
+    for file in os.listdir(dir):
+        if not file.endswith(".json"):
+            continue
+        with open(dir+'/'+file) as data_file:
+            data_json += json.load(data_file)
+    for entry in data_json:
+        if entry['model'] == "facebook_feeds.facebook_status":
+            id = entry['pk'] 
+            if id not in data:
+                data[id] = {"id":id, "text":"", "tags":[], "feed":0}
+            data[id]["text"] = entry['fields']['content']
+            data[id]["feed"] = entry['fields']['feed']
+        if entry['model'] == "kikartags.taggeditem":
+            id = entry['fields']['object_id'] 
+            if id not in data:
+                data[id] = {"id":id, "text":"", "tags":[], "feed":0}
+            data[id]["tags"].append(str(entry['fields']['tag']))
+    return data.values()
+     
         
+# def get_data():
+#     print('getting data')
+#     with open('db/statuses.txt') as statuses_file:
+#         statuses_json = json.load(statuses_file)
+#     statuses = {status['pk']: status['fields']['content'] for status in statuses_json}
+#     with open('db/tags.txt') as tags_file:
+#         tags_data = json.load(tags_file)
+#     tags = {}
+#     for tag in tags_data:
+#         id = tag['fields']['object_id'] 
+#         if id not in tags:
+#             tags[id] = []
+#         tags[id].append(str(tag['fields']['tag']))
+#     data = [DataEntry(i,statuses[i], tags[i]) for i in statuses if i in tags]
+#     return data
         
 class AutoTag:
     
+    def __init__(self):
+        logging.basicConfig(filename='log',level=logging.INFO)
+        self.wnl = WordNetLemmatizer()
 
     def clean_text(self,text):
+        text = unicode(text)
+        text = text.lower()
     #     text = re.sub('[^a-zA-Zא-ת0-9\"\\n]',' ', text)
         puncmarks = string.punctuation+'״׳'
     #     add space before punctuation   
-        text = re.sub('(\S)(['+puncmarks+']+)\s','\\1 \\2 ', text)
+        text = re.sub('(\S)(['+puncmarks+']+)','\\1 \\2 ', text)
     #     add space after punctuation   
-        text = re.sub('\s(['+puncmarks+']+)(\S)',' \\1 \\2 ', text)
+        text = re.sub('(['+puncmarks+']+)(\S)',' \\1 \\2', text)
+        
+        text = re.sub('(\w+)', self.wnl.lemmatize('\\1'),text)
+
         text = re.sub('\s+', ' ', text)
+        
+        text = ' '.join([word.encode('utf-8') for word in text.split() if word.encode('utf-8') not in heb_stopwords])
 #         f = codecs.open('clean_text','w','utf-8')
 #         f.write(text)
 #         f.close()
@@ -243,63 +283,110 @@ class AutoTag:
     def count_data(self,data,name):
         data_count = Counter(data)
         data_count = sorted(data_count.items(), key=lambda item: item[1],reverse = True)
-        with open(name, 'w') as f:
-            data_encoded = [(w.encode('utf-8'),c) for w,c in data_count]
-            json.dump(data_encoded, f, ensure_ascii=False, indent = 4, separators=[',',': '])
+#         with open(name+'.json', 'w') as f:
+# #             data_encoded = [(w,c) for w,c in data_count]
+#             data_encoded = [(w.encode('utf-8'),c) for w,c in data_count]
+#             json.dump(data_encoded, f, ensure_ascii=False, indent = 4, separators=[',',': ']) #TODO: fix
+        with open(name+'.csv', 'w') as f:
+            data_encoded = [(w,c) for w,c in data_count]
+#             data_encoded = [(w.encode('utf-8'),c) for w,c in data_count]
+            w = csv.writer(f, delimiter = ',')
+            w.writerows(data_encoded)
+#             pickle.dump(data_encoded, f) #TODO: fix
         return data_count
 
     def document_features(self,document):
+        document = self.clean_text(document)
         document_words = set(document.split())
-        with open('word_features','r') as word_features_file:
-            word_features = pickle.load(word_features_file)
         features = {}
-        for word in word_features:
+        for word in self.get_word_features():
             features['contains(%s)' % word] = (word in document_words)
         return features
     
-    def get_tags(self,data,n=5):
-        tag_count = self.count_data([tag for status,tags in data for tag in tags],'tag_count.txt')
+    def get_word_features(self):
+        with open('word_features','r') as word_file:
+            word_features = pickle.load(word_file)
+        return word_features
+        
+    
+    def get_tags(self,data,n=100):
+        tag_count = self.count_data([tag for entry in data for tag in entry['tags']],'tag_count.txt')
         tags = [tag for tag,count in tag_count if count > n]
-#         tags = tags[:20]
+#         tags = tags[:2] #TODO: remove
         return tags
     
     def train(self,data):
         tags = self.get_tags(data)
         print(len(tags))
+#         data = [entry for entry in data if entry['tags']]
+        for entry in data:
+            entry['features'] = self.document_features(entry['text'])
+#         print(len(data))
         classifier = {}
         for tag in tags:
-            print(tag)
-            featuresets = [(self.document_features(doc), tag in tags) for (doc,tags) in data if len(tags) > 0]
+            print(tags.index(tag, ))
+#             featuresets = [(self.document_features(entry['text']), tag in entry['tags']) for entry in data if len(entry['tags']) > 0]
+#             featuresets = [(entry['features'], tag in entry['tags']) for entry in data if entry['tags']]
+            featuresets = [(entry['features'], tag in entry['tags']) for entry in data]
             classifier[tag] = nltk.NaiveBayesClassifier.train(featuresets)
-#             classifier[tag].show_most_informative_features(5)
+            logging.info(str(tag)+': '+ str(classifier[tag].most_informative_features(10)))
         with open('classifier','w') as classifier_file:
             pickle.dump(classifier,classifier_file)
         return classifier
     
-    def test_tag(self,documents,tag,thresh):
-        N = len(documents)
+    def test(self,test_set):
+        tags = self.get_tags(test_set)
+        accuracy = {}
+        data = self.clean_data(test_set)
+        print("extracting features")
+        for entry in data:
+            entry['features'] = self.document_features(entry['text'])
+        print("loading classifier")        
         with open('classifier','r') as classifier_file:
             classifier = pickle.load(classifier_file)
-#         featuresets = [(self.document_features(d), tag in c) for (d,c) in documents]
-#         print(nltk.classify.accuracy(classifier, featuresets))
-        probs = []
-        for i in range(N):
+        print("testing:")                
+        print(len(tags))
+        for tag in tags:
+            print(tags.index(tag, ))
             if tag not in classifier:
                 continue
-            prob = classifier[tag].prob_classify(self.document_features(documents[i]))
+#             featuresets = [(self.document_features(entry['text']), tag in entry['tags']) for entry in test_set]
+            featuresets = [(entry['features'], tag in entry['tags']) for entry in data]
+            accuracy[tag] = nltk.classify.accuracy(classifier[tag],featuresets)
+            print(tag+': '+str(accuracy[tag]))
+        return accuracy 
+    
+    def test_tag(self,documents,tag,thresh):
+        N = len(documents)
+        print("cleaning")
+        data = self.clean_data(documents)
+        print("loading classifier")        
+        with open('classifier','r') as classifier_file:
+            classifier = pickle.load(classifier_file)
+        if tag not in classifier:
+            return []
+        print("extracting features")
+        for entry in data:
+            entry['features'] = self.document_features(entry['text'])
+        probs = []
+        print("testing:")                
+        for entry in data:
+            prob = classifier[tag].prob_classify(entry["features"])
             if prob.prob(True) > thresh:
-                probs.append((prob.prob(True),documents[i]))
+                probs.append((prob.prob(True),entry))
         probs = sorted(probs,reverse=True)        
         return probs
     
     def test_doc(self,document,tags,thresh):
+        document["text"] = self.clean_text(document["text"])
+        document["features"] = self.document_features(document["text"])
         with open('classifier','r') as classifier_file:
             classifier = pickle.load(classifier_file)
         probs = []
         for tag in tags:
             if tag not in classifier:
                 continue
-            prob = classifier[tag].prob_classify(self.document_features(document))
+            prob = classifier[tag].prob_classify(document["features"])
             if prob.prob(True) > thresh:
                 probs.append((prob.prob(True),tag))
         probs = sorted(probs,reverse=True)
@@ -307,32 +394,128 @@ class AutoTag:
 # most probable tag: input: status, n  output: list (top n most probable, + score)     
 
     def create_word_features(self,data):
-        word_count = self.count_data([w for s,t in data for w in s.split()],'word_count.txt')
+        word_count = self.count_data([w for entry in data for w in entry['text'].split()],'word_count.txt')
         max_count = max([v for k,v in word_count])
-        word_features = [k for (k,v) in word_count if v > 10 and v < max_count/10]
+#         word_features = [k for (k,v) in word_count if v > 10 and v < max_count/10] #TODO: use something more intelligent
+        word_features = [k for k,v in word_count if v > 10 and v not in heb_stopwords]
+#         print(len(word_features))
         with open('word_features','w') as word_file:
             pickle.dump(word_features,word_file)
 
+    def clean_data(self,data):
+        for i in range(len(data)):
+            data[i]['text'] = self.clean_text(data[i]['text'])
+        return data 
+
     def classify(self,data):
         print('cleaning')
-        data = [(self.clean_text(s),t) for s,t in data]
+        self.clean_data(data)
         print('extracting word features')
         self.create_word_features(data)
-        print('classifying')
+        print('training')
         classifier = self.train(data)
-#         for status,count in test_statuses:
-#             print(self.test_doc(status, big_tags, word_features, classifier, 0.5))
 
 
 if __name__ == '__main__':
-    data = get_data()
+    data = get_json_data('db3')
+    random.shuffle(data)
+    tagged = [d for d in data if d["tags"]]
+    untagged = [d for d in data if not d["tags"]]
+    N = len(tagged)
+    untagged = untagged[:N]#TODO: remove
+    print(N)
+    train_data = tagged[:-N/10]
+    test_data = tagged[-N/10:]
     at = AutoTag()
-#     at.classify(data)
-    tags = at.get_tags(data)
-    documents = [s for s,t in data]
-    print(at.test_doc(documents[0], tags, 0))
-    print(tags[0])
-    print(at.test_tag(documents[:200], tags[0], 0)[0][1])
+
+#     print('classifying')
+#     at.classify(train_data)
+# 
+#     print("testing")
+#     at.test(test_data)
+# 
+#     print("tag")
+#     dir = 'suggestions/'
+#     print(len(untagged))
+#     tags = at.get_tags(tagged)
+#     new_tagged = [] 
+#     for tag in tags[1:]:
+#         print(tags.index(tag, ))
+#         print(tag)
+#         stats = at.test_tag(untagged, tag, 0.01)
+#         for stat in stats:
+#             entry = stat[1]
+#             entry["tags"].append(tag)
+#             entry["features"] = []
+#             with open(dir+str(entry['id']), 'w') as f:
+#                 json.dump(entry,f, indent = 4, separators=[',',': '])
+#             new_tagged.append(entry)
+
+#     for entry in untagged:
+#         print(len(new_tagged))
+#         if(len(new_tagged) > 10):
+#             break
+#         print(untagged.index(entry, ))
+#         tags = at.test_doc(entry, tags, 0.01)
+#         if tags:
+#             entry["tags"] = tags
+#             entry["features"] = []
+#             with open(entry['id'], 'w') as f:
+#                 json.dump(entry,f, indent = 4, separators=[',',': '])
+#             new_tagged.append(entry)
+
+#     with open('suggeted_tags', 'w') as f:
+#         json.dump(new_tagged,f, indent = 4, separators=[',',': '])
+        
+#     tags = at.get_tags(data)
+#     documents = [entry['text'] for entry in data]
+#     print('test doc')
+#     print(at.test_doc(data[0], tags, 0))
+#     print('test tag')
+#     print(tags[1])
+#     print(at.test_tag(data[:200], tags[1], 0)[0][1])
+
+    print('hk freq')
+    dir = 'hk_freq/'
+#     for entry in data:
+#         entry['text'] = at.clean_text(entry['text'])
+#     word_count = at.count_data([w for entry in data for w in entry['text'].split()],dir+'total')
+#     words = [w for w,c in word_count if c > 40]
+#     with open(dir+'freqs.csv', 'wb') as csvfile:
+#         writer = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+#         writer.writerow(['HK']+words)
+#   
+#     hkwords = {}
+#     with open('db3/1002_1002.json') as data_file:
+#         data_json = json.load(data_file)
+#     for json_entry in data_json:
+#         name = json_entry['fields']['name']
+#         print(name) 
+#         if not name:
+#             continue
+#         name = name.encode('utf-8')
+#         word_count = at.count_data([w for entry in data for w in entry['text'].split() if entry["feed"] == json_entry['pk']],dir+name)
+# #         word_count = [(w.encode('utf-8'),c) for w,c in word_count]
+#         word_dict = {w:c for w,c in word_count}
+#         hkwords[name] = []
+#         for word in words:
+#             if word not in word_dict:
+#                 hkwords[name].append(str(0))
+#             else:
+#                 hkwords[name].append(str(word_dict[word])) 
+#         with open(dir+'freqs.csv', 'a') as csvfile:
+#             writer = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+#             writer.writerow([name]+hkwords[name])
+#     
+#     with open(dir+'freqs_t.csv', 'a') as csvfile:
+#         writer = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+#         hks = hkwords.keys()
+#         writer.writerow(['word']+hks)
+#         for word in words:
+#             writer.writerow([word] + [hkwords[hk][words.index(word)] for hk in hks])
+         
+    a = izip(*csv.reader(open(dir+"freqs.csv", "rb")))
+    csv.writer(open(dir+"freqs_t.csv", "wb")).writerows(a)
     
 #     print(tags)
 #     bag = bag_of_words(statuses,word_features)
