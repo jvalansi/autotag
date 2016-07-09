@@ -6,7 +6,7 @@ Created on Dec 29, 2014
 from setuptools import setup
 
 setup(name='autotag',
-      version='0.456',
+      version='0.457',
       description='Tag suggestion according to text ',
       url='https://github.com/jvalansi/autotag',
       author='Jordan Valansi',

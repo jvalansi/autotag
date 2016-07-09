@@ -27,8 +27,6 @@ from stopwords import heb_stopwords
 # import cPickle
 
 
-
-        
 # def get_data():
 #     print('getting data')
 #     with open('db/statuses.txt') as statuses_file:
@@ -51,15 +49,16 @@ class AutoTag:
     '''
     
     def __init__(self, res_dir='res'):
-        with open('log','w') as logfile:
-            pass
-        logging.basicConfig(filename='log',level=logging.INFO)
         self.wnl = WordNetLemmatizer()
 #         self.res_dir = 'res'
 #         self.res_dir = os.path.dirname(__file__)
         self.res_dir = res_dir
         if not os.path.exists(self.res_dir):
             os.mkdir(self.res_dir)
+
+        logname = os.path.join(self.res_dir, 'log')
+        open(logname,'w')
+        logging.basicConfig(filename=logname, level=logging.INFO)
 
 #     def set_res_dir(self, res_dir):
 #         self.res_dir = res_dir
