@@ -14,6 +14,6 @@ setup(name='autotag',
       license='MIT',
       packages=['autotag'],
       install_requires=[
-          'nltk==3.0.0',
+          'nltk',
       ],
       zip_safe=False)
